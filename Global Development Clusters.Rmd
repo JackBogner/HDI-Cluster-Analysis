@@ -1,0 +1,898 @@
+---
+title: "Revisiting the First–Third World Divide: A Data-Driven Classification of Global Development"
+author: "Jack Bogner"
+date: "2025-06-14"
+output:
+  pdf_document:
+    fig_width: 8
+    fig_height: 5
+    fig_caption: true
+    includes:
+      in_header: spacing.tex
+---
+
+Abstract
+==================================
+During the Cold War, countries were classified as First World (NATO and its allies), Second World (the USSR and its allies), and Third World (non-aligned nations). In recent times, this terminology has been adapted to refer to an often generalized developmental divide. The terms "First World" and "Third World" are often used to distinguish between developed and developing countries. In reality, development is a complex and multifaceted concept that spans economic performance, governance quality, social welfare, infrastructure, and more. Modern indices such as the Human Development Index (HDI) aim to capture this complexity in a single metric, but many global disparities remain obscured by simplistic labels.
+
+This project uses unsupervised machine learning techniques to group countries based on a set of economic and social indicators. Drawing from data provided by the World Bank and United Nations Development Program, it constructs a data-driven map of global development patterns. This project aims to evaluate the effectiveness of various machine learning techniques in constructing a generalized model of global developmental divisions among nations. By comparing clustering outcomes to conventional classifications, the project aims to provide insights into how developmental divides are shaped—and occasionally misrepresented—by popular narratives. 
+
+\newpage
+Introduction
+==================================
+Today, the terms "First World" and "Third World" are often used—though imprecisely—to distinguish between developed and developing countries. While these Cold War-era dichotomies are misnomers in the context of development, and such binary labels often oversimplify the nuanced realities of global development, which is shaped by diverse economic, social, and structural factors. 
+
+This project adopts a data-driven perspective to explore global development patterns through unsupervised machine learning. Specifically, it uses techniques—including K-means, Uniform Manifold Approximation and Projection (UMAP), Gaussian Mixture Models, and hierarchical agglomerative clustering—to group countries based on a suite of indicators related to economic activity, health, infrastructure, and demographics. These include GDP, population, exports, energy use, urbanization rate, health expenditure, internet accessibility, and more, sourced from the World Bank. Additionally, Human Development Index (HDI) data from the UNDP serves as a benchmark for evaluating developmental outcomes. 
+
+The analysis proceeds in two stages. First, clustering is used to generate a simplified developmental divide between "developed" and "developing" nations. This binary framing serves as a bridge between historical terminology and modern quantitative analysis. Second, the project moves beyond this two-cluster framework, applying each technique to produce a broader range of clusters. These outcomes are then compared and synthesized using an ensemble approach to identify areas of consensus and divergence among methods.
+
+Through this process, the project aims not only to reconstruct a familiar global divide but also to challenge and refine it. By layering multiple analytical perspectives, it seeks to uncover regions that defy conventional classification—outliers, intermediates, and transitional economies that complicate the developed/developing dichotomy.
+
+Data
+==================================
+Economic and social indicators will be sourced from World Bank data sets. Although the Human Development Index (HDI) serves as a social indicator, I use it primarily as a rough measure of a country’s development level. HDI is preferred because it incorporates multiple factors and is less prone to distortion than single metrics like GDP per capita, which can be misleading for resource-rich countries with low living standards. HDI data is from the United Nations Development Program (UNDP). 
+
+Methods
+==================================
+We will apply several clustering techniques but focus on those that allow us to specify the number of clusters, *k*. Initially, I set *k* = 2 to distinguish between “developed” (or “first world”) and “developing” (or “third world”) countries. The methods used include K-Means Clustering, Uniform Manifold Approximation and Projection (UMAP), Gaussian Mixture Models (GMM), and Hierarchical Clustering. Additionally, I will combine the results of these methods to assess whether an ensemble approach yields more accurate clustering. First, I created a map and a bar plot for each method to visualize regional cluster assignments and examine their relationship with HDI scores. Next, I evaluated which clustering methods best capture differences in HDI scores and increase the number of clusters (k) to explore intermediate and outlier regions. Exploratory analysis shows that 2014 has the most complete data. To impute missing values, I used K-Nearest Neighbors (KNN), drawing on data from 2012 to 2016 for each country or region. 
+
+Results
+==================================
+```{r setup, include=FALSE}
+library(dplyr); library(knitr); library(tidyr)
+library(ggplot2); library(sf); library(rnaturalearth)
+library(rnaturalearthdata); library(mclust); library(uwot)
+library(VIM); library(countrycode); library(randomForest)
+library(patchwork); library(grid); library(gridExtra)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+set.seed(13)
+setwd("~/R/CountryClustering")
+files <- c("AgriValueAddedPercentGDP", "ExportsGoodsAndServicesUSD", 
+           "FinalConsumptionExpenditurePercentGDP", "GrossSavingPercentGDP", 
+           "RevenuePercentGDP", "GDP", "Population", "AgriArea", 
+           "LifeExpectancy", "UrbanPop", "EnergyUse", "HealthcareExpenditure",
+           "InternetServersPerPop", "HDI_Data")
+data_list <- lapply(files, function(name) {
+  read.csv(paste0(name, ".csv"))
+})
+names(data_list) <- files
+world <- ne_countries(scale = "medium", returnclass = "sf")
+#############################################################################################
+######################################### Data links ########################################
+#############################################################################################
+# Exports of goods and services (current US$) - https://data.worldbank.org/indicator/NE.EXP.GNFS.CD
+# GDP (current US$) - https://data.worldbank.org/indicator/NY.GDP.MKTP.CD 
+# Final consumption expenditure (% of GDP) - https://data360.worldbank.org/en/indicator/WB_WDI_NE_CON_TOTL_ZS 
+# Agriculture, value added (% GDP) - https://data360.worldbank.org/en/indicator/FAO_AS_4113
+# Gross savings (% of GDP) - https://data360.worldbank.org/en/indicator/WB_WDI_NY_GNS_ICTR_ZS 
+# Agricultural land (% of land area) - https://data.worldbank.org/indicator/AG.LND.AGRI.ZS 
+# Population, total - https://data.worldbank.org/indicator/SP.POP.TOTL 
+# Revenue (% of GDP) - https://data360.worldbank.org/en/indicator/IMF_FM_GGR_G01_GDP_PT
+# Life expectancy at birth, total (years) - https://data360.worldbank.org/en/indicator/WB_WDI_SP_DYN_LE00_IN 
+# Urban population (% of total population) - https://data360.worldbank.org/en/indicator/WB_WDI_SP_URB_TOTL_IN_ZS 
+# Current health expenditure (% of GDP) - https://data360.worldbank.org/en/indicator/WB_WDI_SH_XPD_CHEX_GD_ZS
+# Energy use (kg of oil equivalent per capita) - https://data360.worldbank.org/en/indicator/WB_WDI_EG_USE_PCAP_KG_OE
+# Secure Internet servers (per 1 million people) - https://data.worldbank.org/indicator/IT.NET.SECR.P6
+# Human Development Index (value) - https://hdr.undp.org/data-center/documentation-and-downloads 
+```
+
+```{r Data Cleaning, include=FALSE}
+clean_data <- function(df, 
+                           country_col = "REF_AREA_NAME", 
+                           country_code = "REF_AREA_ID", 
+                           value_name = "value") {
+  df %>%
+    select(
+      country = all_of(country_col),
+      code = all_of(country_code),
+      year = TIME_PERIOD,
+      value = OBS_VALUE
+    ) %>%
+    rename(!!value_name := value)
+}
+clean_wide_with_header_row <- function(df, 
+                                       slice_rows = 4:nrow(df), 
+                                       cols_to_drop = c("Indicator Name", "Indicator Code"), 
+                                       country_col = "Country Name", 
+                                       code_col = "Country Code", 
+                                       value_name = "value") {
+  df_sliced <- df %>%
+    slice(slice_rows) %>%
+    mutate(across(where(is.character), ~ na_if(.x, "")))
+
+  new_colnames <- as.character(unlist(df_sliced[1, ]))
+  df_clean <- df_sliced[-1, ]
+  colnames(df_clean) <- new_colnames
+
+  df_long <- df_clean %>%
+    select(-any_of(cols_to_drop)) %>%
+    pivot_longer(
+      cols = matches("^[0-9]{4}$"),
+      names_to = "year",
+      values_to = value_name
+    ) %>%
+    rename(
+      country = all_of(country_col),
+      code = all_of(code_col)
+    )
+
+  return(df_long)
+}
+
+join_country_year_data <- function(data_list) {
+  named_data <- Map(function(df, name) {
+    value_col <- setdiff(names(df), c("country", "code", "year"))
+    df %>%
+      mutate(year = as.integer(year)) %>%
+      rename(!!name := all_of(value_col))
+  }, data_list, names(data_list))
+  Reduce(function(x, y) full_join(x, y, by = c("country", "code", "year")), named_data)
+}
+standardize_year <- function(df) {
+  df %>%
+    mutate(year = as.integer(year))
+}
+
+GrossSaving <- clean_data(data_list$GrossSavingPercentGDP)
+Revenue <- clean_data(data_list$RevenuePercentGDP)
+FinalConsumptionExpenditure <- clean_data(data_list$FinalConsumptionExpenditurePercentGDP)
+Agri <- clean_data(data_list$AgriValueAddedPercentGDP, country_col = "REF_AREA_LABEL", country_code = "REF_AREA")
+LifeExpectancy <- clean_data(data_list$LifeExpectancy)
+UrbanPop <- clean_data(data_list$UrbanPop)
+EnergyUse <- clean_data(data_list$EnergyUse)
+##################################################################################
+Exports <- clean_wide_with_header_row(data_list$ExportsGoodsAndServicesUSD)
+GDP <- clean_wide_with_header_row(data_list$GDP)
+Population <- clean_wide_with_header_row(data_list$Population)
+AgriArea <- clean_wide_with_header_row(data_list$AgriArea)
+InternetEst <- clean_wide_with_header_row(data_list$InternetServersPerPop)
+HealthcareExpenditure <- clean_wide_with_header_row(data_list$HealthcareExpenditure)
+##################################################################################
+HDI <- data_list$HDI_Data %>%
+  select(countryIsoCode, country, year, value)
+
+data_long_list <- list(
+  GrossSaving = GrossSaving,
+  Revenue = Revenue,
+  FinalConsumptionExpenditure = FinalConsumptionExpenditure,
+  AgricultureValueofGDP = Agri,
+  LifeExpectancy = LifeExpectancy,
+  UrbanPop = UrbanPop,
+  EnergyUse = EnergyUse,
+  Exports = Exports,
+  GDP = GDP,
+  Population = Population,
+  AgriculturalArea = AgriArea,
+  InternetEst = InternetEst,
+  HealthcareExpenditure = HealthcareExpenditure
+) %>%
+  lapply(standardize_year)
+
+combined_data <- join_country_year_data(data_long_list)
+valid_iso3 <- countrycode::codelist$iso3c
+combined_data <- combined_data %>%
+  filter(code %in% valid_iso3)
+
+meta_cols <- c("country", "code", "year")
+feature_cols <- setdiff(colnames(combined_data), meta_cols)
+scaled_combined_data <- combined_data %>%
+  group_by(year) %>%
+  mutate(across(all_of(feature_cols), ~ as.numeric(scale(.x)))) %>%  
+  ungroup()
+scaled_features_only <- scaled_combined_data %>%
+  select(all_of(feature_cols))
+na_mask <- rowSums(is.na(scaled_features_only)) <= 4
+final_scaled_df <- scaled_combined_data[na_mask, ] %>%
+  select(all_of(meta_cols), all_of(feature_cols))
+```
+
+```{r KNN Imputation, include=FALSE}
+impute_range <- combined_data %>%
+  filter(year >= 2012, year <= 2016)
+meta_cols <- c("country", "code", "year")
+feature_cols <- setdiff(names(impute_range), meta_cols)
+scaled_impute_data <- impute_range %>%
+  group_by(year) %>%
+  mutate(across(all_of(feature_cols), ~ as.numeric(scale(.x)))) %>% 
+  ungroup()
+data_for_imputation <- scaled_impute_data %>%
+  select(all_of(meta_cols), all_of(feature_cols))
+
+imputed_data <- kNN(data_for_imputation, variable = feature_cols, k = 4, imp_var = FALSE)
+
+final_2014_data <- imputed_data %>% filter(year == 2014)
+
+hdi_2014 <- HDI %>%
+  filter(year == 2014) %>%
+  select(code = countryIsoCode, hdi_value = value)
+```
+
+```{r Preprocessing, include=FALSE}
+meta_cols <- c("country", "code", "year")
+feature_cols <- setdiff(colnames(final_2014_data), meta_cols)
+preprocessed_data <- final_2014_data %>%
+  filter(if_all(all_of(feature_cols), ~ !is.na(.) & is.finite(.)))
+meta_data <- preprocessed_data %>% select(all_of(meta_cols))
+features <- preprocessed_data %>% select(all_of(feature_cols))
+```
+
+```{r K-Means, echo=FALSE, warning = FALSE}
+kmeans_result <- kmeans(features, centers = 2, nstart = 25)
+kmeans_clustered_df <- bind_cols(meta_data, features) %>%
+  mutate(cluster = factor(kmeans_result$cluster))
+world_clustered <- left_join(world, kmeans_clustered_df, by = c("iso_a3" = "code"))
+kmeans_clean <- kmeans_clustered_df %>%
+  select(country, code, kmeans_group = cluster) %>%
+  mutate(kmeans_group = as.character(kmeans_group))
+
+kmeans_hdi_df <- kmeans_clean %>%
+  left_join(hdi_2014, by = "code") %>%
+  filter(!is.na(hdi_value))
+hdi_means <- kmeans_hdi_df %>%
+  group_by(kmeans_group) %>%
+  summarise(mean_hdi = mean(hdi_value), .groups = "drop")
+kmeans_cutoff <- mean(hdi_means$mean_hdi)
+
+ggplot(world_clustered) +
+  geom_sf(aes(fill = cluster), color = "gray50", linewidth = 0.1) +
+  scale_fill_manual(
+    values = c("2" = "#1f78b4", "1" = "#33a02c"),
+    na.value = "lightgray",
+    name = "Cluster"
+  ) +
+  theme_minimal() +
+  labs(
+    title = "World Map Colored by K-means Clusters (2014)",
+    subtitle = paste0(
+      "Clusters based on economic, social, and industrial indicators\n",
+      "Approximate HDI cutoff between clusters: ", round(kmeans_cutoff, 3))
+  ) +
+  theme(legend.position = "right")
+```
+
+K-means is a clustering algorithm that partitions a dataset into *k* predefined groups by minimizing the Euclidean distance between data points and their respective cluster centroids. The algorithm iteratively updates cluster assignments and centroid positions until convergence. In our application, K-means produced a relatively balanced split, assigning 111 countries to cluster 1 and 106 to cluster 2. However, K-means does not necessarily make conservative or intuitive assignments. For instance, most of Africa, along with parts of Central Asia and the Caucasus, fall into cluster 2. This includes countries like South Africa, India, Ukraine, and the Dominican Republic—nations often considered more developed than others in the same cluster, such as Syria, Chad, or the Democratic Republic of the Congo (DROTC). This illustrates a key limitation of K-means: it relies solely on numerical similarity in feature space, which may not always align with human or contextual interpretations of concepts like development. 
+
+```{r UMAP, echo=FALSE, warning = FALSE}
+umap_result <- umap(features, n_neighbors = 15, min_dist = 0.1, metric = "euclidean")
+umap_df <- as.data.frame(umap_result)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+kmeans_umap <- kmeans(umap_df, centers = 2, nstart = 25)
+clustered_umap_df <- bind_cols(meta_data, umap_df) %>%
+  mutate(cluster = factor(kmeans_umap$cluster))
+umap_clean <- clustered_umap_df %>%
+  select(country, code, umap_group = cluster) %>%
+  mutate(umap_group = as.character(umap_group))
+
+umap_hdi_df <- umap_clean %>%
+  left_join(hdi_2014, by = "code") %>%
+  filter(!is.na(hdi_value))
+umap_hdi_means <- umap_hdi_df %>%
+  group_by(umap_group) %>%
+  summarise(mean_hdi = mean(hdi_value), .groups = "drop")
+umap_cutoff <- mean(umap_hdi_means$mean_hdi)
+
+world_clustered_umap <- left_join(world, clustered_umap_df, by = c("iso_a3" = "code"))
+ggplot(world_clustered_umap) +
+  geom_sf(aes(fill = cluster), color = "gray50", linewidth = 0.1) +
+  scale_fill_manual(
+    values = c("2" = "#1f78b4", "1" = "#33a02c"),
+    na.value = "lightgray",
+    name = "Cluster"
+  ) +
+  theme_minimal() +
+  labs(
+    title = "World Map Colored by UMAP Clusters (2014)",
+    subtitle = paste0(
+      "Clusters based on economic, social, and industrial indicators\n",
+      "Approximate HDI cutoff between clusters: ", round(umap_cutoff, 3))
+  )  +
+  theme(legend.position = "right")
+```
+
+Uniform Manifold Approximation and Projection (UMAP) is a dimensionality reduction technique which excels and preserving both local and global data structure. It constructs a graph based on the nearest neighbors in the original space, and then optimizes a low-dimensional layout which maintains this structure. In our application, UMAP was followed by K-means clustering, which groups the reduced data into two clusters. Cluster 1 is notably larger than it was using strictly K-means, with 136 countries belonging to cluster 1, and 81 belonging to cluster 2, and with this change UMAP produced some notable differences. Countries such as South Africa, Honduras, and North Korea have now been assigned to cluster 1, which is seemingly the more "developed" cluster, while Iraq, Thailand, and Gabon have shifted to cluster 2. These changes highlight the influence of dimensionality reduction on clustering outcomes, as well as the importance of interpreting clusters in the light of the methods used to generate them.  
+
+```{r Gaussian Mixture Model (GMM), echo=FALSE, warning = FALSE}
+gmm_result <- Mclust(features, G = 2)
+meta_data$cluster <- factor(gmm_result$classification)
+gmm_cluster_df <- meta_data %>%
+  mutate(cluster = factor(gmm_result$classification)) %>%
+  mutate(
+    cluster = as.character(cluster),
+    cluster = case_when(
+      cluster == "1" ~ "2",
+      cluster == "2" ~ "1",
+      TRUE ~ cluster
+    ),
+    cluster = factor(cluster)
+  )
+gmm_clean <- gmm_cluster_df %>%
+  select(country, code, gmm_group = cluster) %>%
+  mutate(gmm_group = as.character(gmm_group))
+
+gmm_hdi_df <- gmm_clean %>%
+  left_join(hdi_2014, by = "code") %>%
+  filter(!is.na(hdi_value))
+gmm_hdi_means <- gmm_hdi_df %>%
+  group_by(gmm_group) %>%
+  summarise(mean_hdi = mean(hdi_value), .groups = "drop")
+gmm_cutoff <- mean(gmm_hdi_means$mean_hdi)
+
+world_clustered <- left_join(world, meta_data, by = c("iso_a3" = "code"))
+ggplot(world_clustered) +
+  geom_sf(aes(fill = cluster), color = "gray50", linewidth = 0.1) +
+  scale_fill_manual(
+    values = c("1" = "#1f78b4", "2" = "#33a02c"),
+    na.value = "lightgray",
+    name = "Cluster"
+  ) +
+  theme_minimal() +
+  labs(
+    title = "World Map Colored by GMM Clusters (2014)",
+    subtitle = paste0(
+      "Clusters based on economic, social, and industrial indicators\n",
+      "Approximate HDI cutoff between clusters: ", round(gmm_cutoff, 3))
+  )  +
+  theme(legend.position = "right")
+```
+
+Gaussian Mixture Models (GMM) provide a probabilistic approach to clustering by assuming the data is generated from a mixture of multiple Gaussian distributions. Unlike K-means and UMAP, which assigns observations to clusters based on distance, GMM evaluates the probability of membership in each cluster, allowing for more flexible boundaries between groups. In our application, while cluster sizes are comparable to UMAP (132 in cluster 1, and 85 in cluster 2), actual assignments vary drastically. GMM has flipped the Caucasus back to cluster 2, along with large chunks of Latin and South America. Additionally, it has flipped India, Pakistan, and DROTC to cluster 1. This assignment change is reasonable for an economic powerhouse like India, though it is hard to justify the change in assignment for the DROTC, which is often rated among the lowest countries for human development. These changes reflect how GMM's probabilistic modeling can lead to a different interpretation of country groupings, particularly in cases where data does not conform to the hard, spherical data assumptions of K-means. Based solely on observation, it seems GMM is one of the weaker clustering methods in the context of our data. 
+
+```{r Hierarchical Clustering, echo=FALSE, warning = FALSE}
+dist_matrix <- dist(features, method = "euclidean")
+hc <- hclust(dist_matrix, method = "ward.D2")
+clusters <- cutree(hc, k = 2)
+meta_data$cluster <- factor(clusters)
+hc_cluster_df <- meta_data
+hc_clean <- hc_cluster_df %>%
+  select(country, code, hc_group = cluster) %>%
+  mutate(hc_group = as.character(hc_group))
+
+hc_hdi_df <- hc_clean %>%
+  left_join(hdi_2014, by = "code") %>%
+  filter(!is.na(hdi_value))
+hc_hdi_means <- hc_hdi_df %>%
+  group_by(hc_group) %>%
+  summarise(mean_hdi = mean(hdi_value), .groups = "drop")
+hc_cutoff <- mean(hc_hdi_means$mean_hdi)
+
+world_clustered <- left_join(world, meta_data, by = c("iso_a3" = "code"))
+ggplot(world_clustered) +
+  geom_sf(aes(fill = cluster), color = "gray50", linewidth = 0.1) +
+  scale_fill_manual(
+    values = c("2" = "#1f78b4", "1" = "#33a02c"),
+    na.value = "lightgray",
+    name = "Cluster"
+  ) +
+  theme_minimal() +
+  labs(
+    title = "World Map Colored by Hierarchical Clusters (2014)",
+    subtitle = paste0(
+      "Clusters based on economic, social, and industrial indicators\n",
+      "Approximate HDI cutoff between clusters: ", round(hc_cutoff, 3))
+  )  +
+  theme(legend.position = "right")
+```
+
+Hierarchical Clustering builds a multilevel hierarchy of clusters by either successively merging smaller clusters or splitting larger ones. Unlike K-means or GMM, it does not specify the number of clusters, and produces a dendrogram that helps visualize nested groupings and relative similarity between observations. I have cut this dendrogram at two groups, with 165 countries in cluster 1, and 52 in cluster 2. Notably, cluster 2 is centered in Africa, with notable mentions in Central and Southeast Asia. This clustering aligns well with global patterns of development, suggesting a division that meaningfully captures low and high levels of human development. Hierarchical clustering appears well-suited for our data, and it avoids some limitations of centroid-based methods such as K-means, which can overgeneralize clusters with broad or complex feature patterns. In this case, the hierarchical approach seems to reflect human development variation with more sensitivity. 
+
+```{r Bar-Plots, echo = FALSE, warning = FALSE}
+color_map <- c("2" = "#1f78b4", "1" = "#33a02c")
+kmeans_hdi_df <- kmeans_clean %>%
+  left_join(hdi_2014, by = "code")
+
+kmeans_hdi_plot <- ggplot(kmeans_hdi_df, aes(x = kmeans_group, y = hdi_value, fill = kmeans_group)) +
+  geom_boxplot() +
+  geom_hline(yintercept = kmeans_cutoff, color = "red", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = color_map) +
+  theme_minimal() +
+  labs(
+    title = "K-means Clustering",
+    subtitle = paste0("Approx. HDI cutoff at ", round(kmeans_cutoff, 3)),
+    y = "HDI Value",
+    fill = "Cluster"
+  ) +
+  theme(
+    axis.title.x = element_blank(),
+  )
+umap_hdi_df <- umap_clean %>%
+  left_join(hdi_2014, by = "code")
+
+umap_hdi_plot <- ggplot(umap_hdi_df, aes(x = umap_group, y = hdi_value, fill = umap_group)) +
+  geom_boxplot() +
+  geom_hline(yintercept = umap_cutoff, color = "red", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = color_map) +
+  theme_minimal() +
+  labs(
+    title = "UMAP",
+    subtitle = paste0("Approx. HDI cutoff at ", round(umap_cutoff, 3)),
+    fill = "Cluster"
+  ) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+  )
+gmm_hdi_df <- gmm_clean %>%
+  left_join(hdi_2014, by = "code")
+
+gmm_hdi_plot <- ggplot(gmm_hdi_df, aes(x = gmm_group, y = hdi_value, fill = gmm_group)) +
+  geom_boxplot() +
+  geom_hline(yintercept = gmm_cutoff, color = "red", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = color_map) +
+  theme_minimal() +
+  labs(
+    title = "Gaussian Mixture Models",
+    subtitle = paste0("Approx. HDI cutoff at ", round(gmm_cutoff, 3)),
+    y = "HDI Value",
+    fill = "Cluster"
+  ) +
+  theme(
+    axis.title.x = element_blank(),
+  )
+hc_hdi_df <- hc_clean %>%
+  left_join(hdi_2014, by = "code")
+
+hc_hdi_plot <- ggplot(hc_hdi_df, aes(x = hc_group, y = hdi_value, fill = hc_group)) +
+  geom_boxplot() +
+  geom_hline(yintercept = hc_cutoff, color = "red", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = color_map) +
+  theme_minimal() +
+  labs(
+    title = "Hierarchical Clustering",
+    subtitle = paste0("Approx. HDI cutoff at ", round(hc_cutoff, 3)),
+    fill = "Cluster"
+  ) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+  )
+
+(kmeans_hdi_plot | umap_hdi_plot) /
+                  (gmm_hdi_plot | hc_hdi_plot) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom") &
+    plot_annotation(
+    title = "HDI Distribution Across Clustering Methods",
+    theme = theme(plot.title = element_text(hjust = 0.5))
+  ) 
+```
+
+Comparing Human Development Index (HDI) values for each of our previous clustering methods, it is easier to visualize which methods best distinguish between low and high human development. The average of HDI means within groups is visualized in red to help visualize the degree of separation between clusters. From this perspective it is clear that UMAP and Hierarchical Clustering are better at forming groups which reflect human development, and they have notably smaller HDI cutoff values. Interestingly, the methods which have a greater degree of separation also estimate smaller HDI cutoffs. The cutoffs for UMAP and Hierarchical Clustering are both less than the 2014 HDI mean of 0.714. While this is not enough evidence to draw any conclusions about an ideal HDI cutoff value, it does suggest that methods producing more polarized groupings may be better aligned with real-world development disparities. I can say with confidence that Hierarchical Clustering is the best suited method for our data, and has the highest number of "reasonable" assignments. For investigative purposes, I increased the number of clusters *k* to three. 
+
+```{r Hierarchical Clustering Extended, echo = FALSE, warning = FALSE}
+three_clusters <- cutree(hc, k = 3)
+meta_data$cluster <- factor(three_clusters)
+hc3_cluster_df <- meta_data
+hc3_clean <- hc3_cluster_df %>%
+  select(country, code, hc_group = cluster) %>%
+  mutate(hc_group = as.character(hc_group))
+world_clustered <- left_join(world, hc3_cluster_df, by = c("iso_a3" = "code"))
+cluster_colors <- c("1" = "#33a02c", "2" = "#1f78b4", "3" = "#ffd92f")
+
+ggplot(world_clustered) +
+  geom_sf(aes(fill = cluster), color = "gray50", linewidth = 0.1) +
+  scale_fill_manual(values = cluster_colors, name = "Cluster") +
+  theme_minimal() +
+  labs(
+    title = "World Map Colored by Hierarchical Clusters (2014)",
+    subtitle = "3 clusters based on economic, social, and industrial indicators"
+  ) +
+  theme(legend.position = "right")
+
+##################################################################################
+
+hdi_2014 <- HDI %>%
+  filter(year == 2014) %>%
+  select(code = countryIsoCode, hdi_value = value)
+hc_hdi_df <- hc3_clean %>%
+  left_join(hdi_2014, by = "code")
+
+hdi_cutoff <- hc_hdi_df %>%
+  filter(hc_group %in% c("1", "2")) %>%
+  group_by(hc_group) %>%
+  summarise(mean_hdi = mean(hdi_value, na.rm = TRUE)) %>%
+  summarise(cutoff = mean(mean_hdi)) %>%
+  pull(cutoff)
+
+ggplot(hc_hdi_df, aes(x = hc_group, y = hdi_value, fill = hc_group)) +
+  geom_boxplot() +
+  geom_hline(yintercept = hdi_cutoff, color = "red", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = cluster_colors, name = "Cluster") +
+  theme_minimal() +
+  labs(
+    title = "HDI Distribution by Hierarchical Cluster (2014)",
+    subtitle = paste("Red line: HDI cutoff between Clusters 1 & 2 (", round(hdi_cutoff, 3), ")", sep = ""),
+    x = "Hierarchical Cluster",
+    y = "Human Development Index (HDI)",
+    fill = "Cluster"
+  )
+```
+
+Interestingly, this reveals a cluster containing just three countries: China, India, and the United States. As *k* increases, this cluster persists until *k* = 7, where the cluster is split into a cluster containing China and India, and a cluster containing the United States. The HDI of the countries align with the "developed" cluster, however further analysis indicates that this cluster has significant outliers across a number of indicators. This suggests that despite similar development levels by some metrics, their broader economic and social profiles are distinct enough to warrant separate clusters at higher resolutions.
+
+```{r Indicator Importance and Outliers, echo = FALSE, warning = FALSE}
+unscaled_2014_data <- combined_data %>%
+  filter(year == 2014)
+selected_vars <- c("AgricultureValueofGDP", "Exports", "GDP", "Population", "LifeExpectancy", "UrbanPop")
+rf_df <- unscaled_2014_data %>%
+  select(country, code, all_of(selected_vars)) %>%
+  left_join(meta_data %>% select(code, cluster), by = "code")
+rf_df_long <- rf_df %>%
+  pivot_longer(cols = all_of(selected_vars), names_to = "Variable", values_to = "Value")
+
+ggplot(rf_df_long, aes(x = cluster, y = Value, fill = cluster)) +
+  geom_boxplot() +
+  facet_wrap(~ Variable, scales = "free", ncol = 2) +
+  scale_fill_manual(values = cluster_colors) +
+  theme_minimal() +
+  labs(
+    title = "Distributions of Selected Features by Cluster",
+    x = "Cluster",
+    y = "Unscaled Value",
+    fill = "Cluster"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 0)
+  )
+
+##################################################################################
+
+rf_df <- features %>%
+  mutate(cluster = factor(three_clusters))
+rf_model <- randomForest(cluster ~ ., data = rf_df, importance = TRUE)
+var_importance <- importance(rf_model)
+var_importance_df <- data.frame(
+  Variable = rownames(var_importance),
+  Importance = var_importance[, "MeanDecreaseGini"]
+) %>%
+  arrange(desc(Importance))
+var_importance_df <- var_importance_df %>%
+  mutate(Color = ifelse(Variable %in% c("Exports", "GDP", "Population"), "red", "steelblue"))
+
+ggplot(var_importance_df, aes(x = reorder(Variable, Importance), y = Importance, fill = Color)) +
+  geom_col() +
+  scale_fill_identity() +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Random Forest Variable Importance",
+    subtitle = "Predicting Hierarchical Clusters (k = 3) with Scaled Data",
+    x = "Feature",
+    y = "Feature Importance (Gini Impurity Reduction)"
+  )
+
+##################################################################################
+
+unscaled_2014_clustered <- unscaled_2014_data %>%
+  left_join(meta_data %>% select(code, cluster), by = "code") %>%
+  mutate(cluster = factor(cluster),
+         label_name = ifelse(country == "United States", "USA", country))
+
+ggplot(unscaled_2014_clustered, aes(x = reorder(country, LifeExpectancy), y = LifeExpectancy, fill = cluster)) +
+  geom_col() +
+  geom_text(
+    data = subset(unscaled_2014_clustered, cluster == "3"),
+    aes(label = label_name),
+    hjust = -0.1, size = 2.5
+  ) +
+  coord_flip() +
+  scale_fill_manual(values = c("1" = "#33a02c", "2" = "#1f78b4", "3" = "#ffd92f")) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(
+    title = "Life Expectancy by Country (2014, Unscaled)",
+    subtitle = "Colored by Hierarchical Cluster at k = 3 — Labels Shown for Cluster 3",
+    x = "Country",
+    y = "Life Expectancy (Years)",
+    fill = "Cluster"
+  )
+
+##################################################################################
+
+ggplot(unscaled_2014_clustered, aes(x = reorder(country, AgricultureValueofGDP), y = AgricultureValueofGDP, fill = cluster)) +
+  geom_col() +
+  geom_text(
+    data = subset(unscaled_2014_clustered, country %in% c("United States", "India", "China")),
+    aes(label = ifelse(country == "United States", "USA", country)),
+    hjust = -0.1, size = 2.5
+  ) +
+  coord_flip() +
+  scale_fill_manual(values = c("1" = "#33a02c", "2" = "#1f78b4", "3" = "#ffd92f")) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(
+    title = "Agriculture as % of GDP by Country (2014, Unscaled)",
+    subtitle = "Colored by Hierarchical Cluster at k = 3 — Labels for USA, India, China",
+    x = "Country",
+    y = "Agriculture (% of GDP)",
+    fill = "Cluster"
+  )
+```
+
+Notable outlying indicators for this new cluster include Population, GDP, and Exports. However, when using a random forest model and indicator visualizations, this cluster does not stand out on the most influential variables (outliers are highlighted in red on the importance plot). The extreme values in GDP, population, and export volume likely explain why these countries are particularly challenging for clustering algorithms to classify confidently. This also helps clarify why earlier methods showed uncertainty in the placement of countries like India. These plots highlight a strong positive correlation between life expectancy and HDI, and a strong negative correlation between agriculture’s share of GDP and HDI. The former is expected, as life expectancy is one of the three main components used when generating the HDI value, however, the latter reflects the trend between economic diversification and higher human development. Notably, the United States stands out with the highest life expectancy and the lowest percentage of GDP from agriculture, which helps explain why it split from the third cluster before India or China.
+
+Having examined each clustering method individually, I will now shift focus to how they align collectively. To synthesize results across methods, two approaches were used. First, a majority consensus approach was applied, where countries were grouped based on whether at least three out of four methods assigned them to the same cluster. Countries with two methods in each cluster were labeled as having mixed consensus. This formed a new three-level classification. In the second approach, I tallied the number of times each country was assigned to Cluster 1 across the four methods. This count—ranging from 0 to 4—was used to form a new five-level classification. This allows us to assess how repeated cluster assignments relate to HDI, with more frequent Cluster 1 assignments typically corresponding to higher development. Together, these approaches provide a broader, more robust view of global development patterns through the lens of unsupervised clustering.
+
+```{r Cluster Concensus, echo=FALSE, warning = FALSE}
+cluster_comparison_df <- kmeans_clean %>%
+  inner_join(umap_clean, by = c("country", "code")) %>%
+  inner_join(gmm_clean, by = c("country", "code")) %>%
+  inner_join(hc_clean, by = c("country", "code"))
+cluster_comparison_df <- cluster_comparison_df %>%
+  mutate(across(c(kmeans_group, umap_group, gmm_group, hc_group), as.character))
+cluster_comparison_df <- cluster_comparison_df %>%
+  rowwise() %>%
+  mutate(
+    n_cluster1 = sum(c_across(c(kmeans_group, umap_group, gmm_group, hc_group)) == "1", na.rm = TRUE),
+    n_cluster2 = sum(c_across(c(kmeans_group, umap_group, gmm_group, hc_group)) == "2", na.rm = TRUE),
+    consensus_cluster = case_when(
+      n_cluster1 >= 3 ~ "1",
+      n_cluster2 >= 3 ~ "3",
+      n_cluster1 == 2 & n_cluster2 == 2 ~ "2",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  ungroup()
+world_clustered_consensus <- world %>%
+  left_join(cluster_comparison_df, by = c("iso_a3" = "code"))
+cluster_colors <- c(
+  "3" = "#00008b",
+  "2" = "skyblue",
+  "1" = "#33a02c"
+)
+ggplot(world_clustered_consensus) +
+  geom_sf(aes(fill = consensus_cluster), color = "gray50", linewidth = 0.1) +
+  scale_fill_manual(
+    values = cluster_colors,
+    na.value = "lightgray",
+    name = "Consensus Cluster",
+    labels = c(
+      "1" = "Cluster 1",
+      "2" = "Mixed Consensus",
+      "3" = "Cluster 2"
+    )
+  ) +
+  theme_minimal() +
+  labs(
+    title = "World Map Colored by Consensus Clusters (2014)",
+    subtitle = "Cluster 3 = mixed / no consensus"
+  ) +
+  theme(legend.position = "right")
+
+##################################################################################
+
+cluster_comparison_hdi <- cluster_comparison_df %>%
+  left_join(hdi_2014, by = "code")
+ggplot(cluster_comparison_hdi, aes(x = consensus_cluster, y = hdi_value, fill = consensus_cluster)) +
+  geom_boxplot() +
+  scale_fill_manual(values = cluster_colors) +
+  theme_minimal() +
+  labs(
+    title = "HDI Distribution by Consensus Cluster (2014)",
+    x = "Consensus Cluster",
+    y = "Human Development Index (HDI)"
+  )
+```
+
+The consensus based approach produced a coherent global pattern: the Cluster 1 consensus group exhibited the highest average HDI, followed by the mixed group, with the Cluster 2 consensus group having the lowest. This suggests that clustering agreement is positively correlated with development level. Notably, the four South American countries with the lowest HDI are classified as either Mixed Consensus—such as Bolivia, Paraguay, and Suriname—or Cluster 2, which includes Guyana, the country with the lowest HDI in South America. This pattern extends to Latin America, where Haiti and Guatemala—the first and third lowest HDI countries in North America—are assigned to the Cluster 2 consensus group, while Honduras, with the second lowest HDI, falls into the Mixed Consensus group. In our second approach, I count the number of Cluster 1 assignments to refine the relative development ranking by introducing more nuanced cluster categories. 
+
+Next, I created an HDI map based on new cluster categories derived from the count of Cluster 1 assignments. Specifically, I defined HDI groups by the mean HDI values within each cluster count category (0 to 4 assignments). This approach allows us to visualize how well the clustering consensus corresponds to actual development levels, highlighting any inaccuracies or inconsistencies arising from the varying reliability of clustering methods. In other words, for each count of Cluster 1 assignments, I calculated the mean HDI and use these values as cutoffs to group countries into HDI ranges. I then mapped these groups to better understand how the number of Cluster 1 assignments relates to human development across countries.
+
+```{r Ensemble by Cluster Assignment Counts, echo = FALSE, warning = FALSE}
+cluster_comparison_df <- kmeans_clean %>%
+  inner_join(umap_clean, by = c("country", "code")) %>%
+  inner_join(gmm_clean, by = c("country", "code")) %>%
+  inner_join(hc_clean, by = c("country", "code")) %>%
+  mutate(across(c(kmeans_group, umap_group, gmm_group, hc_group), as.character)) %>%
+  rowwise() %>%
+  mutate(
+    n_cluster1 = sum(c_across(c(kmeans_group, umap_group, gmm_group, hc_group)) == "1", na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+cluster_colors <- c(
+  "0" = "#00008b",
+  "1" = "skyblue",
+  "2" = "#008080",
+  "3" = "#33a02c",
+  "4" = "#006400"
+)
+
+world_clustered_consensus <- world %>%
+  left_join(cluster_comparison_df, by = c("iso_a3" = "code")) %>%
+  mutate(n_cluster1 = as.character(n_cluster1)) 
+
+ggplot(world_clustered_consensus) +
+  geom_sf(aes(fill = n_cluster1), color = "gray50", linewidth = 0.1) +
+  scale_fill_manual(
+    values = cluster_colors,
+    na.value = "lightgray",
+    name = "Number of Assignments to Cluster 1",
+    labels = c("0", "1", "2", "3", "4")
+  ) +
+  theme_minimal() +
+  coord_sf(expand = FALSE) +
+  labs(
+    title = "World Map by Number of Cluster 1 Assignments (2014)",
+    subtitle = "Color intensity reflects number of clustering methods assigning Cluster 1"
+  ) +
+  theme(legend.position = "right")
+
+##################################################################################
+
+cluster_comparison_hdi <- cluster_comparison_df %>%
+  left_join(hdi_2014, by = "code") %>%
+  filter(!is.na(hdi_value))
+hdi_cutoffs_by_ncluster1 <- cluster_comparison_hdi %>%
+  group_by(n_cluster1) %>%
+  summarise(
+    count = n(),
+    mean_hdi = mean(hdi_value, na.rm = TRUE),
+    median_hdi = median(hdi_value, na.rm = TRUE),
+    sd_hdi = sd(hdi_value, na.rm = TRUE)
+  ) %>%
+  arrange(as.numeric(n_cluster1))
+cluster_comparison_hdi <- cluster_comparison_df %>%
+  left_join(hdi_2014, by = "code") %>%
+  filter(!is.na(hdi_value))
+
+hdi_cutoffs_by_ncluster1 <- cluster_comparison_hdi %>%
+  group_by(n_cluster1) %>%
+  summarise(mean_hdi = mean(hdi_value, na.rm = TRUE)) %>%
+  arrange(n_cluster1)
+cutoffs <- hdi_cutoffs_by_ncluster1$mean_hdi
+names(cutoffs) <- as.character(hdi_cutoffs_by_ncluster1$n_cluster1)
+cluster_comparison_hdi <- cluster_comparison_hdi %>%
+  rowwise() %>%
+  mutate(
+    hdi_color_group = case_when(
+      hdi_value < cutoffs["0"] ~ "0",
+      hdi_value >= cutoffs["0"] & hdi_value < cutoffs["1"] ~ "1",
+      hdi_value >= cutoffs["1"] & hdi_value < cutoffs["2"] ~ "2",
+      hdi_value >= cutoffs["2"] & hdi_value < cutoffs["3"] ~ "3",
+      hdi_value >= cutoffs["3"] ~ "4",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  ungroup()
+world_clustered_hdi <- world %>%
+  left_join(cluster_comparison_hdi, by = c("iso_a3" = "code"))
+ggplot(world_clustered_hdi) +
+  geom_sf(aes(fill = hdi_color_group), color = "gray50", linewidth = 0.1) +
+  scale_fill_manual(
+    values = cluster_colors,
+    na.value = "lightgray",
+    name = "HDI Range by Cluster 1 Assignments",
+    labels = c(
+      "0" = "Below mean HDI (0 assignments)",
+      "1" = "Between mean HDI (0) and (1)",
+      "2" = "Between mean HDI (1) and (2)",
+      "3" = "Between mean HDI (2) and (3)",
+      "4" = "Above mean HDI (3+)"
+    )
+  ) +
+  theme_minimal() +
+  coord_sf(expand = FALSE) +
+  labs(
+    title = "World Map Colored by HDI Range Relative to Cluster 1 Assignments",
+    subtitle = "Colored by HDI intervals defined by mean HDI for each count of cluster 1 assignments"
+  ) +
+  theme(legend.position = "right")
+
+##################################################################################
+
+cluster_comparison_hdi_count <- cluster_comparison_df %>%
+  left_join(hdi_2014, by = "code") %>%
+  filter(!is.na(hdi_value)) %>%
+  mutate(n_cluster1 = as.factor(n_cluster1))
+ggplot(cluster_comparison_hdi_count, aes(x = n_cluster1, y = hdi_value, fill = n_cluster1)) +
+  geom_boxplot() +
+  scale_fill_manual(values = cluster_colors) +
+  theme_minimal() +
+  labs(
+    title = "HDI Distribution by Number of Cluster 1 Assignments (2014)",
+    x = "Number of Assignments to Cluster 1",
+    y = "Human Development Index (HDI)"
+  )
+```
+
+This approach highlights inaccuracies in our counting method predictions. To name a few, the counting method as predicted a wider variability in development within South America than HDI scores indicate. Additionally the inaccuracy of methods like GMM means our predictions for some developing countries such as the DROTC, South Sudan, and Pakistan are overestimated. However overall it seems that this provides a relatively accurate approximation of HDI. The bar plot shows a similar increasing HDI trend across groups as in our first approach, with some variation in countries assigned to Cluster 1 by only one method—likely due to GMM’s lower accuracy. A confusion matrix further helps assess prediction accuracy.
+
+```{r Confusion Matrix, echo=FALSE, warning = FALSE}
+cm <- table(
+  Predicted = cluster_comparison_hdi$hdi_color_group, 
+  Reference = cluster_comparison_hdi$n_cluster1
+)
+conf_df <- as.data.frame(cm)
+
+ggplot(conf_df, aes(x = Reference, y = Predicted, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "white", size = 6) +
+  scale_fill_gradient(low = "lightblue", high = "blue") +
+  theme_minimal() +
+  labs(
+    title = "Confusion Matrix Heatmap",
+    x = "True Cluster Assignment",
+    y = "Predicted HDI Color Group"
+  )
+```
+
+This confusion matrix reveals that, although some inaccuracies occur—especially between similar clusters like 3 versus 4 assignments to Cluster 1—the approach is largely accurate when distinguishing developed from developing countries. These "one-off" misclassifications are likely due to limitations in the GMM model or other specific model inaccuracies.
+
+Overall, the clustering approaches demonstrate a consistent ability to differentiate development levels, with some expected variation stemming from model-specific limitations. Having established these patterns and their associated uncertainties, we now turn to a deeper discussion of the implications, potential improvements, and broader context of these findings.
+
+\newpage
+Discussion
+==================================
+Our analysis shows that while clustering methods consistently capture broad patterns in global development, there remain notable inaccuracies and limitations, particularly with methods like Gaussian Mixture Models (GMM). GMM's probabilistic framework appears sensitive to assumptions about data distribution, often overestimating development for central African countries. In contrast, Hierarchical Clustering demonstrated greater alignment with expected development patterns and produced clusters which reflected human development more closely. To improve our model and clustering reliability, several avenues could be explored:
+
+1. **Incorporation of additional indicators**: Expanding the feature set to include more socio-economic indicators, such as governance metrics or inequality indices, may enhance cluster differentiation. 
+
+2. **Iterative or Ensemble Hierarchical Clustering**: By running hierarchical clustering multiple times with varied seeds or using different linkage criteria (e.g., average, complete, Ward's) could generate diverse cluster solutions. Aggregating these via consensus clustering or co-association matrices could stabilize cluster assignments and identify robust groupings. 
+
+3. **Exploring Alternative Clustering Algorithms**: Incorporating additional clustering methods such as density based methods such as DBSCAN or HDBSCAN may help identify atypical countries that do not conform to standard development patterns. 
+
+4. **Addressing Missing Data and Imputation Effects**: Some countries, such as France and Norway, were excluded due to extensive missing data. Exploring alternative imputation methods beyond K-Nearest Neighbors (KNN) may offer better handling of incomplete records and reduce bias in clustering outcomes. Assessing how these choices affect cluster assignments could improve the robustness of the overall model.
+
+\newpage
+Conclusion
+==================================
+This project set out to explore global patterns of development using unsupervised clustering methods, with the goal of reinterpreting the traditional “First World” vs. “Third World” dichotomy through modern economic and social indicators. By applying and comparing several clustering techniques—K-means, UMAP, Gaussian Mixture Models (GMM), and Hierarchical Clustering—we examined how different algorithms interpret global disparities in development and which produce the most reasonable groupings relative to Human Development Index (HDI) scores.
+
+Hierarchical Clustering emerged as the most accurate and interpretable method, producing results that aligned closely with HDI and known regional development levels. UMAP also performed well, particularly in preserving nuanced regional distinctions, while K-means occasionally overgeneralized. GMM proved less reliable, frequently misclassifying countries due to its sensitivity to distributional assumptions which are not well-suited to the data.
+
+An ensemble approach using multiple techniques proved to provide accurate classifications, often identifying regions more accurately than any one technique. Despite the model’s strengths, several limitations remain. Key countries were excluded due to missing data, and the choice of imputation method (KNN) may have influenced results. Additionally, the project used a limited set of indicators, which, while illustrative, do not capture the full range of development dimensions. Future work could expand the model by incorporating more variables and by exploring iterative or hybrid clustering methods.
+
+While clustering cannot replace human judgment or institutional definitions of development, it offers a powerful tool for uncovering patterns, identifying outliers, and challenging simplistic categorizations. Through careful method selection, consensus-building, and continual refinement, unsupervised learning can help uncover the intricate structure of global development disparities.
+
+\newpage
+Data Sources
+==================================
+The following indicators and datasets were used in this project:
+
+1. **Exports of goods and services (current US$)**. World Bank.  
+   [https://data.worldbank.org/indicator/NE.EXP.GNFS.CD](https://data.worldbank.org/indicator/NE.EXP.GNFS.CD)
+
+2. **GDP (current US$)**. World Bank.  
+   [https://data.worldbank.org/indicator/NY.GDP.MKTP.CD](https://data.worldbank.org/indicator/NY.GDP.MKTP.CD)
+
+3. **Final consumption expenditure (% of GDP)**. World Bank.  
+   [https://data360.worldbank.org/en/indicator/WB_WDI_NE_CON_TOTL_ZS](https://data360.worldbank.org/en/indicator/WB_WDI_NE_CON_TOTL_ZS)
+
+4. **Agriculture, value added (% of GDP)**. World Bank.  
+   [https://data360.worldbank.org/en/indicator/FAO_AS_4113](https://data360.worldbank.org/en/indicator/FAO_AS_4113)
+
+5. **Gross savings (% of GDP)**. World Bank.  
+   [https://data360.worldbank.org/en/indicator/WB_WDI_NY_GNS_ICTR_ZS](https://data360.worldbank.org/en/indicator/WB_WDI_NY_GNS_ICTR_ZS)
+
+6. **Agricultural land (% of land area)**. World Bank.  
+   [https://data.worldbank.org/indicator/AG.LND.AGRI.ZS](https://data.worldbank.org/indicator/AG.LND.AGRI.ZS)
+
+7. **Population, total**. World Bank.  
+   [https://data.worldbank.org/indicator/SP.POP.TOTL](https://data.worldbank.org/indicator/SP.POP.TOTL)
+
+8. **Revenue (% of GDP)**. International Monetary Fund / World Bank.  
+   [https://data360.worldbank.org/en/indicator/IMF_FM_GGR_G01_GDP_PT](https://data360.worldbank.org/en/indicator/IMF_FM_GGR_G01_GDP_PT)
+
+9. **Life expectancy at birth, total (years)**. World Bank.  
+    [https://data360.worldbank.org/en/indicator/WB_WDI_SP_DYN_LE00_IN](https://data360.worldbank.org/en/indicator/WB_WDI_SP_DYN_LE00_IN)
+
+10. **Urban population (% of total population)**. World Bank.  
+    [https://data360.worldbank.org/en/indicator/WB_WDI_SP_URB_TOTL_IN_ZS](https://data360.worldbank.org/en/indicator/WB_WDI_SP_URB_TOTL_IN_ZS)
+
+11. **Current health expenditure (% of GDP)**. World Bank.  
+    [https://data360.worldbank.org/en/indicator/WB_WDI_SH_XPD_CHEX_GD_ZS](https://data360.worldbank.org/en/indicator/WB_WDI_SH_XPD_CHEX_GD_ZS)
+
+12. **Energy use (kg of oil equivalent per capita)**. World Bank.  
+    [https://data360.worldbank.org/en/indicator/WB_WDI_EG_USE_PCAP_KG_OE](https://data360.worldbank.org/en/indicator/WB_WDI_EG_USE_PCAP_KG_OE)
+
+13. **Secure Internet servers (per 1 million people)**. World Bank.  
+    [https://data.worldbank.org/indicator/IT.NET.SECR.P6](https://data.worldbank.org/indicator/IT.NET.SECR.P6)
+
+14. **Human Development Index (value)**. United Nations Development Programme (UNDP).  
+    [https://hdr.undp.org/data-center/documentation-and-downloads](https://hdr.undp.org/data-center/documentation-and-downloads)
